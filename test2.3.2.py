@@ -10,7 +10,7 @@ class DuplicateFinderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Multi-File Barcode Duplicate Finder")
-        self.root.geometry("600x400")
+        self.root.geometry("600x500")
 
         self.selected_files = []
         self.sheet_selection_comboboxes = []
