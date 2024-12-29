@@ -231,10 +231,14 @@ class DuplicateFinderApp:
                 output_filename = f"All_Duplicates_{timestamp}.xlsx"
                 duplicates_df.to_excel(output_filename, index=False)
 
+                self.update_status(100, "")
                 self.queue.put(("complete", True, 
                     f"{unique_duplicates_count} Duplicates found and saved to '{output_filename}'"))
+                self.update_status(0, "")
             else:
+                self.update_status(100, "")
                 self.queue.put(("complete", True, "No duplicates found across selected files."))
+                self.update_status(0, "")
 
         except Exception as e:
             self.queue.put(("complete", False, f"An error occurred: {str(e)}"))
