@@ -4,27 +4,36 @@ from tkinter.ttk import Combobox, Progressbar
 import pandas as pd
 import os
 import datetime
+import threading
+from queue import Queue
 
 
 class DuplicateFinderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Multi-File Barcode Duplicate Finder")
-        self.root.geometry("600x400")
+        self.root.geometry("600x500")
 
         self.selected_files = []
         self.sheet_selection_comboboxes = []
-        self.sheet_headers = {}  # Store sheet names for each file
+        self.sheet_headers = {}
+        
+        # Queue for thread communication
+        self.queue = Queue()
+        
+        # Create GUI elements
+        self.create_gui()
 
+    def create_gui(self):
         # File selection
-        self.file_button = tk.Button(root, text="Select Files", command=self.select_files)
+        self.file_button = tk.Button(self.root, text="Select Files", command=self.select_files)
         self.file_button.pack(pady=10)
 
-        self.file_label = tk.Label(root, text="No files selected")
+        self.file_label = tk.Label(self.root, text="No files selected")
         self.file_label.pack()
 
-        # Create a scrollable canvas for file and sheet selection
-        self.canvas_frame = tk.Frame(root)
+        # Create a scrollable canvas
+        self.canvas_frame = tk.Frame(self.root)
         self.canvas_frame.pack(fill="both", expand=True)
 
         self.canvas = tk.Canvas(self.canvas_frame)
@@ -35,35 +44,54 @@ class DuplicateFinderApp:
             "<Configure>",
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
+
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-        # Bind mouse wheel and keyboard events
+        # Bind scrolling events
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Up>", lambda e: self.canvas.yview_scroll(-1, "units"))
         self.canvas.bind_all("<Down>", lambda e: self.canvas.yview_scroll(1, "units"))
-        self.canvas.bind_all("<Prior>", lambda e: self.canvas.yview_scroll(-1, "pages"))  # Page Up
-        self.canvas.bind_all("<Next>", lambda e: self.canvas.yview_scroll(1, "pages"))  # Page Down
+        self.canvas.bind_all("<Prior>", lambda e: self.canvas.yview_scroll(-1, "pages"))
+        self.canvas.bind_all("<Next>", lambda e: self.canvas.yview_scroll(1, "pages"))
 
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
-        # Progress bar and status label
-        self.progress = Progressbar(root, orient="horizontal", mode="determinate", length=300)
-        self.progress.pack(pady=10)
+        # Progress frame
+        self.progress_frame = tk.Frame(self.root)
+        self.progress_frame.pack(fill="x", pady=10)
 
-        self.status_label = tk.Label(root, text="")
-        self.status_label.pack()
+        self.progress = Progressbar(
+            self.progress_frame,
+            orient="horizontal",
+            mode="determinate",
+            length=300
+        )
+        self.progress.pack(pady=5)
+
+        self.status_var = tk.StringVar()
+        self.status_label = tk.Label(
+            self.progress_frame,
+            textvariable=self.status_var,
+            wraplength=500,
+            height=2,
+            justify=tk.CENTER
+        )
+        self.status_label.pack(fill="x", padx=10)
 
         # Start button
-        self.start_button = tk.Button(root, text="Start Duplicate Check", command=self.find_duplicates)
+        self.start_button = tk.Button(
+            self.root,
+            text="Start Duplicate Check",
+            command=self.start_processing
+        )
         self.start_button.pack(pady=10)
 
     def _on_mousewheel(self, event):
-        # Scroll on mouse wheel (Windows/Linux and macOS handling)
-        if event.num == 5 or event.delta < 0:  # Down
+        if event.num == 5 or event.delta < 0:
             self.canvas.yview_scroll(1, "units")
-        elif event.num == 4 or event.delta > 0:  # Up
+        elif event.num == 4 or event.delta > 0:
             self.canvas.yview_scroll(-1, "units")
 
     def select_files(self):
@@ -79,7 +107,6 @@ class DuplicateFinderApp:
             self.file_label.config(text="No files selected")
 
     def display_file_selection(self):
-        # Clear previous selections
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         self.sheet_selection_comboboxes = []
@@ -87,123 +114,133 @@ class DuplicateFinderApp:
 
         for idx, file in enumerate(self.selected_files):
             try:
-                # Get sheet names
                 sheet_names = pd.ExcelFile(file).sheet_names
                 self.sheet_headers[file] = sheet_names
 
-                # Create a frame for each file and dropdown pair
                 file_frame = tk.Frame(self.scrollable_frame)
                 file_frame.pack(fill="x", pady=5)
 
-                # Display the file label with increased width
-                sheet_label = tk.Label(file_frame, text=f"File {idx + 1}: {os.path.basename(file)}", width=50, anchor="w")
+                sheet_label = tk.Label(
+                    file_frame,
+                    text=f"File {idx + 1}: {os.path.basename(file)}",
+                    width=50,
+                    anchor="w"
+                )
                 sheet_label.pack(side="left", padx=10)
 
-                # Create and display the dropdown with reduced width
-                sheet_combobox = Combobox(file_frame, values=sheet_names, state="readonly", width=7)
+                sheet_combobox = Combobox(
+                    file_frame,
+                    values=sheet_names,
+                    state="readonly",
+                    width=7
+                )
                 sheet_combobox.pack(side="left", padx=10)
-                sheet_combobox.current(0)  # Default to first sheet
+                sheet_combobox.current(0)
                 self.sheet_selection_comboboxes.append(sheet_combobox)
             except Exception as e:
                 messagebox.showerror("Error", f"Error reading file {file}: {str(e)}")
 
     def update_status(self, progress, status):
-        self.progress["value"] = progress
-        self.status_label.config(text=status)
-        self.root.update_idletasks()
+        self.queue.put(("status", progress, status))
 
-    def clear_status(self):
-        self.status_label.config(text="")
-        self.root.update_idletasks()
+    def check_queue(self):
+        while not self.queue.empty():
+            msg = self.queue.get()
+            if msg[0] == "status":
+                _, progress, status = msg
+                self.progress["value"] = progress
+                self.status_var.set(status)
+                self.root.update_idletasks()
+            elif msg[0] == "complete":
+                _, success, message = msg
+                self.enable_controls()
+                if success:
+                    messagebox.showinfo("Success", message)
+                else:
+                    messagebox.showerror("Error", message)
+        
+        self.root.after(100, self.check_queue)
 
-    def find_duplicates(self):
+    def start_processing(self):
         if not self.selected_files:
             messagebox.showwarning("Warning", "Please select files first.")
             return
 
-        barcode_locations = []
+        self.disable_controls()
+        thread = threading.Thread(target=self.process_files, daemon=True)
+        thread.start()
+        self.check_queue()
 
+    def disable_controls(self):
+        self.file_button.config(state="disabled")
+        self.start_button.config(state="disabled")
+        for combobox in self.sheet_selection_comboboxes:
+            combobox.config(state="disabled")
+
+    def enable_controls(self):
+        self.file_button.config(state="normal")
+        self.start_button.config(state="normal")
+        for combobox in self.sheet_selection_comboboxes:
+            combobox.config(state="readonly")
+
+    def process_files(self):
         try:
-            self.progress["maximum"] = len(self.selected_files) + 2  # Include steps for processing and saving
-            self.progress["value"] = 0  # Reset progress bar
+            barcode_locations = []
+            total_steps = len(self.selected_files) + 2
 
             for idx, file in enumerate(self.selected_files):
                 selected_sheet = self.sheet_selection_comboboxes[idx].get()
-
-                if not selected_sheet:
-                    messagebox.showwarning("Warning", f"Please select a sheet for File {idx + 1}.")
-                    return
-
                 file_name = os.path.basename(file)
-                self.update_status(idx, f"Checking barcodes in {file_name}...")
-
-                # Read the selected sheet, skipping the first row and using the second row as headers
+                
+                self.update_status(idx * 100 / total_steps, f"Reading {file_name}...")
+                
                 df = pd.read_excel(file, sheet_name=selected_sheet, header=1)
-
-                # Automatically detect barcode-like columns
                 barcode_columns = [col for col in df.columns if "barcode" in col.lower()]
 
                 if not barcode_columns:
-                    messagebox.showwarning("Warning", f"No 'Barcode' columns found in {file} ({selected_sheet}).")
-                    continue
+                    self.queue.put(("complete", False, f"No 'Barcode' columns found in {file_name}"))
+                    return
 
-                # Aggregate all barcode data with location
                 for col in barcode_columns:
                     for idx, value in enumerate(df[col].dropna()):
                         barcode_locations.append((value, str(file_name)))
 
-                # Update progress bar
-                self.update_status(idx + 1, f"Processed {file_name}.")
-
-            # Find duplicates
-            self.update_status(len(self.selected_files) + 1, "Finding duplicates...")
+            self.update_status(90, "Processing duplicates...")
+            
             barcode_df = pd.DataFrame(barcode_locations, columns=["BARCODE", "FILE_NAME"])
             duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
 
             if not duplicate_barcodes.empty:
                 unique_duplicates_count = duplicate_barcodes["BARCODE"].nunique()
-
                 grouped_duplicates = []
 
                 for barcode, group in duplicate_barcodes.groupby("BARCODE"):
-                    rows = group.reset_index(drop=True)
                     row_data = [barcode]
-
-                    for _, row in rows.iterrows():
+                    for _, row in group.iterrows():
                         row_data.append(row["FILE_NAME"])
-
                     grouped_duplicates.append(row_data)
 
                 max_files = max(len(row) - 1 for row in grouped_duplicates)
                 headers = ["DUPLICATE_BARCODES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
-
-                aligned_duplicates = [
-                    row + [""] * (len(headers) - len(row)) for row in grouped_duplicates
-                ]
-
+                aligned_duplicates = [row + [""] * (len(headers) - len(row)) for row in grouped_duplicates]
                 duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
 
-                self.update_status(len(self.selected_files) + 1.5, "Creating Excel sheet...")
+                self.update_status(95, "Saving results...")
 
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_filename = f"All_Duplicates_{timestamp}.xlsx"
                 duplicates_df.to_excel(output_filename, index=False)
 
-                self.update_status(len(self.selected_files) + 2, "Saving the file...")
-
-                messagebox.showinfo("Success", f"{unique_duplicates_count} Duplicates found and saved to '{output_filename}'.")
+                self.queue.put(("complete", True, 
+                    f"{unique_duplicates_count} Duplicates found and saved to '{output_filename}'"))
             else:
-                self.update_status(len(self.selected_files) + 2, "No duplicates found.")
-                messagebox.showinfo("No Duplicates", "No duplicates found across selected files.")
-
-            self.clear_status()
+                self.queue.put(("complete", True, "No duplicates found across selected files."))
 
         except Exception as e:
-            self.clear_status()
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            self.queue.put(("complete", False, f"An error occurred: {str(e)}"))
 
 
-# Run the application
-root = tk.Tk()
-app = DuplicateFinderApp(root)
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = DuplicateFinderApp(root)
+    root.mainloop()
