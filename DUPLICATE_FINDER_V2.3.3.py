@@ -228,7 +228,10 @@ class DuplicateFinderApp:
                 self.update_status(95, "Saving results...")
 
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"All_Duplicates_{timestamp}.xlsx"
+                destination_path=os.path.join(os.path.expanduser("~"), "Desktop")
+                folder_path = os.path.join(destination_path, "DUPLICATE_BARCODES")
+                os.makedirs(folder_path, exist_ok=True)
+                output_filename = os.path.join(folder_path, f"All_Duplicates_{timestamp}.xlsx")
                 duplicates_df.to_excel(output_filename, index=False)
 
                 self.update_status(100, "")
