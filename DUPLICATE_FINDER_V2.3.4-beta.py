@@ -18,7 +18,8 @@ class DuplicateFinderApp:
         # Custom ICON barcode patterns
         self.barcode_patterns = {
             'ICON-17': r'^ICON\d{13}$',  # ICON followed by 13 digits
-            'ICON-18': r'^ICON\d{3}[A-Z]\d{10}$'  # ICON + 3 digits + 1 letter + 10 digits
+            'ICON-18': r'^ICON\d{3}[A-Z]\d{10}$',  # ICON + 3 digits + 1 letter + 10 digits
+            'ICON-20': r'^ICON\d{5}[A-Z]\d{10}$'  # ICON + 5 digits + 1 letter + 10 digits
         }
 
         self.selected_files = []
@@ -127,7 +128,7 @@ class DuplicateFinderApp:
             return False, None
 
         # Check for exact length (17 or 18 characters)
-        if len(str_value) not in [17, 18]:
+        if len(str_value) not in [17, 18, 20]:
             return False, None
 
         # Check if starts with 'ICON'
@@ -143,6 +144,11 @@ class DuplicateFinderApp:
         elif len(str_value) == 18:
             if re.match(self.barcode_patterns['ICON-18'], str_value):
                 return True, 'ICON-18'
+        
+        # For 20-character format
+        elif len(str_value) == 20:
+            if re.match(self.barcode_patterns['ICON-20'], str_value):
+                return True, 'ICON-20'
 
         return False, None
 
@@ -328,7 +334,8 @@ class DuplicateFinderApp:
                             'Unique Barcodes',
                             'Duplicate Barcodes',
                             '17-Character Barcodes',
-                            '18-Character Barcodes'
+                            '18-Character Barcodes',
+                            '20-Character Barcodes'
                         ],
                         'Value': [
                             len(self.selected_files),
@@ -336,7 +343,8 @@ class DuplicateFinderApp:
                             len(barcode_df['BARCODE'].unique()),
                             len(duplicate_barcodes['BARCODE'].unique()),
                             len(barcode_df[barcode_df['FORMAT'] == 'ICON-17']),
-                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-18'])
+                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-18']),
+                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-20'])
                         ]
                     }
                     pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
