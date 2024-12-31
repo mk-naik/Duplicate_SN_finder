@@ -224,14 +224,11 @@ class DuplicateFinderApp:
 
                     for barcode in barcodes:
                         all_barcodes.append({
-                            'barcode': barcode['value'],
-                            'file': file_name,
-                            'sheet': selected_sheet,
-                            'column': barcode['column'],
-                            'row': barcode['row'],
-                            'format': barcode['type']
+                            'BARCODE': barcode['value'],
+                            'FILE_NAME': file_name,
+                            'FORMAT': barcode['type']
                         })
-                            
+                        
                 except Exception as e:
                     self.queue.put(("complete", False, f"Error processing {file_name}: {str(e)}"))
                     return
@@ -241,26 +238,47 @@ class DuplicateFinderApp:
                 return
 
             self.update_status(90, "Processing duplicates...")
+        
+            # Convert to DataFrame and find duplicates
+            barcode_df = pd.DataFrame(all_barcodes, columns=["BARCODE", "FILE_NAME", "FORMAT"])
+            duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
+
+            if not duplicate_barcodes.empty:
+                self.update_status(95, "Preparing detailed report...")
+
+                # Create grouped duplicates with the format you want
+                grouped_duplicates = []
+                for barcode, group in duplicate_barcodes.groupby("BARCODE"):
+                    # Count occurrences of each barcode
+                    copies = len(group)
+                
+                    # Create row with barcode and its file locations
+                    row_data = [barcode, copies]  # Start with barcode and copies count
+                    file_names = group["FILE_NAME"].tolist()
+                    row_data.extend(file_names)
+                    grouped_duplicates.append(row_data)
+
+                # Create headers with maximum number of files
+                max_files = max(len(row) - 2 for row in grouped_duplicates)  # -2 for BARCODE and COPIES columns
+                headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
             
-            # Convert to DataFrame for easier processing
-            barcodes_df = pd.DataFrame(all_barcodes)
-            duplicates = barcodes_df[barcodes_df.duplicated('barcode', keep=False)].sort_values('barcode')
+                # Pad rows with empty strings to match header length
+                aligned_duplicates = [row + [""] * (len(headers) - len(row)) for row in grouped_duplicates]
+            
+                # Create final DataFrame
+                duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
 
-            if not duplicates.empty:
-                self.update_status(95, "Saving results...")
-
-                # Create detailed report
+                # Save to Excel
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 destination_path = os.path.expanduser("~")
                 folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
                 os.makedirs(folder_path, exist_ok=True)
                 output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
 
-                # Create Excel writer object
                 with pd.ExcelWriter(output_filename) as writer:
-                    # Detailed duplicates sheet
-                    duplicates.to_excel(writer, sheet_name='Detailed_Report', index=False)
-                    
+                    # Detailed duplicates sheet with new format
+                    duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
+                
                     # Summary sheet
                     summary_data = {
                         'Metric': [
@@ -273,18 +291,18 @@ class DuplicateFinderApp:
                         ],
                         'Value': [
                             len(self.selected_files),
-                            len(barcodes_df),
-                            len(barcodes_df['barcode'].unique()),
-                            len(duplicates['barcode'].unique()),
-                            len(barcodes_df[barcodes_df['format'] == 'ICON-17']),
-                            len(barcodes_df[barcodes_df['format'] == 'ICON-18'])
+                            len(barcode_df),
+                            len(barcode_df['BARCODE'].unique()),
+                            len(duplicate_barcodes['BARCODE'].unique()),
+                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-17']),
+                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-18'])
                         ]
                     }
                     pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
 
                 self.update_status(100, "")
                 self.queue.put(("complete", True, 
-                    f"Found {len(duplicates['barcode'].unique())} duplicate ICON barcodes. "
+                    f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
                     f"Report saved to '{output_filename}'"))
                 self.update_status(0, "")
             else:
@@ -294,7 +312,7 @@ class DuplicateFinderApp:
 
         except Exception as e:
             self.queue.put(("complete", False, f"An error occurred: {str(e)}"))
-
+    
     def update_status(self, progress, status):
         self.queue.put(("status", progress, status))
 
