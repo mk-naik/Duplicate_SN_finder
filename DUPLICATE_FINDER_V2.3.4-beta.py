@@ -32,13 +32,21 @@ class DuplicateFinderApp:
         self.create_gui()
 
     def create_gui(self):
-        # File selection
-        self.file_button = tk.Button(self.root, text="Select Files", command=self.select_files)
-        self.file_button.pack(pady=10)
+        # Create a frame for the buttons
+        button_frame = tk.Frame(self.root)
+        button_frame.pack(pady=10)
+
+        # File selection button
+        self.file_button = tk.Button(button_frame, text="Select Files", command=self.select_files)
+        self.file_button.pack(side="left", padx=5)
+
+        # Folder selection button
+        self.folder_button = tk.Button(button_frame, text="Select Folder", command=self.select_folder)
+        self.folder_button.pack(side="left", padx=5)
 
         self.file_label = tk.Label(self.root, text="No files selected")
         self.file_label.pack()
-
+        
         # Create a scrollable canvas
         self.canvas_frame = tk.Frame(self.root)
         self.canvas_frame.pack(fill="both", expand=True)
@@ -94,6 +102,14 @@ class DuplicateFinderApp:
             command=self.start_processing
         )
         self.start_button.pack(pady=10)
+
+            # Reset button (add this after the Start button)
+        self.reset_button = tk.Button(
+            self.root,
+            text="Reset Selection",
+            command=self.reset_selection
+        )
+        self.reset_button.pack(pady=5)
 
     def detect_barcodes(self, value):
         """
@@ -159,12 +175,37 @@ class DuplicateFinderApp:
             filetypes=[("Excel Files", "*.xlsx *.xls")]
         )
         if files:
-            self.selected_files = files
+            current_files = list(self.selected_files)
+            self.selected_files = list(set(current_files + list(files)))
             self.file_label.config(text=f"{len(files)} file(s) selected")
             self.display_file_selection()
         else:
             self.file_label.config(text="No files selected")
 
+    def select_folder(self):
+        folder_selected = filedialog.askdirectory(title="Select Folder")
+        
+        if not folder_selected:
+            return
+            
+        excel_files = []
+        # Walk through all subdirectories and files
+        for root, dirs, files in os.walk(folder_selected):
+            for file in files:
+                # Check if the file is an Excel file
+                if file.endswith(('.xlsx', '.xls')):
+                    # Construct the full file path
+                    excel_files.append(os.path.join(root, file))
+        
+        if excel_files:
+            # Add new files to existing selection
+            current_files = list(self.selected_files)
+            self.selected_files = list(set(current_files + excel_files))
+            self.file_label.config(text=f"{len(self.selected_files)} file(s) selected")
+            self.display_file_selection()
+        else:
+            messagebox.showinfo("Information", "No Excel files found in the selected folder and its subfolders.")
+    
     def display_file_selection(self):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
@@ -344,15 +385,27 @@ class DuplicateFinderApp:
         thread.start()
         self.check_queue()
 
+    def reset_selection(self):
+        self.selected_files = []
+        self.file_label.config(text="No files selected")
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        self.sheet_selection_comboboxes = []
+        self.sheet_headers = {}
+
     def disable_controls(self):
         self.file_button.config(state="disabled")
+        self.folder_button.config(state="disabled")
         self.start_button.config(state="disabled")
+        self.reset_button.config(state="disabled")
         for combobox in self.sheet_selection_comboboxes:
             combobox.config(state="disabled")
 
     def enable_controls(self):
         self.file_button.config(state="normal")
+        self.folder_button.config(state="normal")
         self.start_button.config(state="normal")
+        self.reset_button.config(state="normal")
         for combobox in self.sheet_selection_comboboxes:
             combobox.config(state="readonly")
 
