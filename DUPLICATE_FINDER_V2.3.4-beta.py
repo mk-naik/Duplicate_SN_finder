@@ -400,6 +400,10 @@ class DuplicateFinderApp:
             widget.destroy()
         self.sheet_selection_comboboxes = []
         self.sheet_headers = {}
+        
+        # Reset the progress bar and status
+        self.progress["value"] = 0  # Reset the progress bar to 0
+        self.status_var.set("")  # Clear the status label
 
     def disable_controls(self):
         self.file_button.config(state="disabled")
