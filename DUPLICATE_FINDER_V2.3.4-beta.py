@@ -240,7 +240,7 @@ class DuplicateFinderApp:
                 full_path = os.path.join(root, file)
                 if self.is_valid_excel_file(full_path):
                     excel_files.append(full_path)
-                elif file.endswith(('.xlsx', '.xls')):  # Count skipped Excel files
+                elif file.endswith(('.xlsx', '.xls', '.xlsm')):  # Count skipped Excel files
                     skipped_files += 1
         
         if excel_files:
@@ -270,7 +270,12 @@ class DuplicateFinderApp:
 
         for idx, file in enumerate(self.selected_files):
             try:
-                sheet_names = pd.ExcelFile(file).sheet_names
+                # Get appropriate engine for the file type
+                engine = self.get_excel_engine(file)
+                
+                # Read Excel file with appropriate engine
+                excel_file = pd.ExcelFile(file, engine=engine)
+                sheet_names = excel_file.sheet_names
                 self.sheet_headers[file] = sheet_names
 
                 file_frame = tk.Frame(self.scrollable_frame)
@@ -294,7 +299,7 @@ class DuplicateFinderApp:
                 sheet_combobox.current(0)
                 self.sheet_selection_comboboxes.append(sheet_combobox)
             except Exception as e:
-                messagebox.showerror("Error", f"Error reading file {file}: {str(e)}")
+                messagebox.showerror("Error", f"Error reading file {os.path.basename(file)}: {str(e)}")
 
     def process_files(self):
         try:
