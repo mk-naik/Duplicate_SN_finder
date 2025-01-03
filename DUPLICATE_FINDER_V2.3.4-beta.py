@@ -175,15 +175,37 @@ class DuplicateFinderApp:
         elif event.num == 4 or event.delta > 0:
             self.canvas.yview_scroll(-1, "units")
 
+    def is_valid_excel_file(self, filename):
+        """Check if the file is a valid Excel file (not temporary and has correct extension)"""
+        base_name = os.path.basename(filename)
+        return (
+            not base_name.startswith("~$") and  # Skip temporary files
+            base_name.endswith((".xlsx", ".xls"))  # Must be Excel file
+        )
+
     def select_files(self):
         files = filedialog.askopenfilenames(
             title="Select Excel Files",
             filetypes=[("Excel Files", "*.xlsx *.xls")]
         )
         if files:
+            # Filter out temporary files
+            valid_files = [f for f in files if self.is_valid_excel_file(f)]
+            
+            if not valid_files:
+                messagebox.showwarning("Warning", "No valid Excel files selected. Temporary files (~$) will be skipped.")
+                return
+                
+            # Add to existing selection, avoiding duplicates
             current_files = list(self.selected_files)
-            self.selected_files = list(set(current_files + list(files)))
-            self.file_label.config(text=f"{len(files)} file(s) selected")
+            self.selected_files = list(set(current_files + valid_files))
+            
+            skipped = len(files) - len(valid_files)
+            if skipped > 0:
+                self.file_label.config(
+                    text=f"{len(valid_files)} file(s) selected ({skipped} temporary file(s) skipped)")
+            else:
+                self.file_label.config(text=f"{len(files)} file(s) selected")
             self.display_file_selection()
         else:
             self.file_label.config(text="No files selected")
@@ -195,22 +217,34 @@ class DuplicateFinderApp:
             return
             
         excel_files = []
+        skipped_files = 0
         # Walk through all subdirectories and files
         for root, dirs, files in os.walk(folder_selected):
             for file in files:
-                # Check if the file is an Excel file
-                if file.endswith(('.xlsx', '.xls')):
-                    # Construct the full file path
-                    excel_files.append(os.path.join(root, file))
+                full_path = os.path.join(root, file)
+                if self.is_valid_excel_file(full_path):
+                    excel_files.append(full_path)
+                elif file.endswith(('.xlsx', '.xls')):  # Count skipped Excel files
+                    skipped_files += 1
         
         if excel_files:
             # Add new files to existing selection
             current_files = list(self.selected_files)
             self.selected_files = list(set(current_files + excel_files))
-            self.file_label.config(text=f"{len(self.selected_files)} file(s) selected")
+            
+            if skipped_files > 0:
+                self.file_label.config(
+                    text=f"{len(excel_files)} file(s) selected ({skipped_files} temporary file(s) skipped)")
+            else:
+                self.file_label.config(text=f"{len(excel_files)} file(s) selected")
+                
             self.display_file_selection()
         else:
-            messagebox.showinfo("Information", "No Excel files found in the selected folder and its subfolders.")
+            if skipped_files > 0:
+                messagebox.showinfo("Information", 
+                    "Only temporary Excel files were found. These files are skipped.")
+            else:
+                messagebox.showinfo("Information", "No Excel files found in the selected folder and its subfolders.")
     
     def display_file_selection(self):
         for widget in self.scrollable_frame.winfo_children():
