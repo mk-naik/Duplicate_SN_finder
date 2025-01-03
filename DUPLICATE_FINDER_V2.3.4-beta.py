@@ -180,13 +180,13 @@ class DuplicateFinderApp:
         base_name = os.path.basename(filename)
         return (
             not base_name.startswith("~$") and  # Skip temporary files
-            base_name.endswith((".xlsx", ".xls"))  # Must be Excel file
+            base_name.endswith((".xlsx", ".xls", ".xlsm"))  # Must be Excel file
         )
 
     def select_files(self):
         files = filedialog.askopenfilenames(
             title="Select Excel Files",
-            filetypes=[("Excel Files", "*.xlsx *.xls")]
+            filetypes=[("Excel Files", "*.xlsx *.xls *.xlsm")]
         )
         if files:
             # Filter out temporary files
@@ -210,6 +210,22 @@ class DuplicateFinderApp:
         else:
             self.file_label.config(text="No files selected")
 
+    def is_valid_excel_file(self, filename):
+        # Check if the file is a valid Excel file (not temporary and has correct extension)
+        base_name = os.path.basename(filename)
+        return (
+            not base_name.startswith("~$") and  # Skip temporary files
+            base_name.endswith((".xlsx", ".xls", ".xlsm"))  # Added .xlsm
+        )
+
+    def get_excel_engine(self, file_path):
+        """Determine the appropriate engine based on file extension"""
+        file_extension = os.path.splitext(file_path)[1].lower()
+        if file_extension == '.xls':
+            return 'xlrd'
+        else:  # .xlsx and .xlsm files
+            return 'openpyxl'
+            
     def select_folder(self):
         folder_selected = filedialog.askdirectory(title="Select Folder")
         
@@ -283,6 +299,7 @@ class DuplicateFinderApp:
     def process_files(self):
         try:
             all_barcodes = []
+            file_summary = []
             total_steps = len(self.selected_files) + 2
 
             for idx, file in enumerate(self.selected_files):
@@ -298,6 +315,13 @@ class DuplicateFinderApp:
                     
                     barcodes = self.find_barcodes_in_dataframe(df)
                     
+                    # Add file summary data
+                    file_summary.append({
+                        'FILE_NAME': file_name,
+                        'BARCODE_COUNT': len(barcodes),
+                        'PATH': os.path.abspath(file)
+                    })
+
                     if not barcodes:
                         self.update_status(idx * 100 / total_steps, 
                                          f"No ICON barcodes found in {file_name}, continuing...")
@@ -323,6 +347,11 @@ class DuplicateFinderApp:
             # Convert to DataFrame and find duplicates
             barcode_df = pd.DataFrame(all_barcodes, columns=["BARCODE", "FILE_NAME", "FORMAT"])
             duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
+
+            # Create file summary DataFrame
+            file_summary_df = pd.DataFrame(file_summary)
+            # Sort by barcode count in descending order
+            file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
 
             if not duplicate_barcodes.empty:
                 self.update_status(95, "Preparing detailed report...")
@@ -360,7 +389,10 @@ class DuplicateFinderApp:
                     # Detailed duplicates sheet with new format
                     duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
                 
+                     # File Summary sheet
+                    file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
                     # Summary sheet
+
                     summary_data = {
                         'Metric': [
                             'Total Files Processed',
