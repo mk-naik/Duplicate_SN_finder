@@ -309,8 +309,10 @@ class DuplicateFinderApp:
                 self.update_status(idx * 100 / total_steps, f"Reading {file_name}...")
                 
                 try:
+                    # Determine the appropriate engine based on file extension
+                    engine = self.get_excel_engine(file)
                     # Read all rows as strings to preserve leading zeros
-                    df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str)
+                    df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
                     self.update_status(idx * 100 / total_steps, f"Scanning for ICON barcodes in {file_name}...")
                     
                     barcodes = self.find_barcodes_in_dataframe(df)
