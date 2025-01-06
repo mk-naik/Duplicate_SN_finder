@@ -417,7 +417,7 @@ class DuplicateFinderApp:
                 duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
 
                 if not duplicate_barcodes.empty:
-                    self.update_status(95, "Preparing detailed report...")
+                    self.update_status(95, "Compailing Duplicates...")
 
                     # Create grouped duplicates
                     grouped_duplicates = []
@@ -437,6 +437,7 @@ class DuplicateFinderApp:
                 
                     # Create final DataFrame
                     duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
+                    self.update_status(96, "Preparing Detailed_Report...")
 
                     # Save to Excel
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -451,8 +452,10 @@ class DuplicateFinderApp:
                     
                         # File Summary sheet with status
                         file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
+                        self.update_status(97, "Preparing File_Summary...")
 
                         # Summary sheet with error information
+                        self.update_status(98, "Preparing Summary...")
                         summary_data = {
                             'Metric': [
                                 'Total Files Processed',
@@ -478,6 +481,7 @@ class DuplicateFinderApp:
                             ]
                         }
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+                        self.update_status(99, "Saving report...")
 
                     self.update_status(100, "Saved")
                     self.queue.put(("complete", True, success_msg))
