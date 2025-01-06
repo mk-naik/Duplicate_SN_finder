@@ -344,20 +344,26 @@ class DuplicateFinderApp:
             all_barcodes = []
             file_summary = []
             error_files = []
-            total_steps = len(self.selected_files) + 2
+            total_files = len(self.selected_files)
+
+            # Adjust total steps to better reflect the process
+            # 80% for file processing, 10% for duplicate processing, 10% for report generation
+            file_progress_weight = 80  # Maximum percentage for file processing
+            progress_per_file = file_progress_weight / total_files if total_files > 0 else 0
 
             for idx, file in enumerate(self.selected_files):
                 try:
                     selected_sheet = self.sheet_selection_comboboxes[idx].get()
                     file_name = os.path.basename(file)
-                    
-                    self.update_status(idx * 100 / total_steps, f"Reading {file_name}...")
+                    # Calculate progress for current file
+                    current_progress = idx * progress_per_file
+                    self.update_status(current_progress, f"Reading {file_name}...")
                     
                     # Determine the appropriate engine based on file extension
                     engine = self.get_excel_engine(file)
                     # Read all rows as strings to preserve leading zeros
                     df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
-                    self.update_status(idx * 100 / total_steps, f"Scanning for ICON barcodes in {file_name}...")
+                    self.update_status(current_progress + (progress_per_file / 2), f"Scanning for ICON barcodes in {file_name}...")
                     
                     barcodes = self.find_barcodes_in_dataframe(df)
                     
@@ -370,7 +376,7 @@ class DuplicateFinderApp:
                     })
 
                     if not barcodes:
-                        self.update_status(idx * 100 / total_steps, 
+                        self.update_status(current_progress + progress_per_file, 
                                         f"No ICON barcodes found in {file_name}, continuing...")
                         continue
 
@@ -391,7 +397,7 @@ class DuplicateFinderApp:
                         'PATH': os.path.abspath(file),
                         'STATUS': f'Failed: {str(e)}'
                     })
-                    self.update_status(idx * 100 / total_steps, f"Skipping {file_name} due to error...")
+                    self.update_status(current_progress + progress_per_file, f"Skipping {file_name} due to error...")
                     continue
 
             if not all_barcodes and not error_files:
@@ -473,28 +479,34 @@ class DuplicateFinderApp:
                         }
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
 
-                    self.update_status(100, "")
+                    self.update_status(100, "Saved")
+                    self.queue.put(("complete", True, success_msg))
                     success_msg = f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
                     if error_files:
                         success_msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors. "
                     success_msg += f"\nReport saved to '{output_filename}'"
                     self.queue.put(("complete", True, success_msg))
-                    self.update_status(0, "")
+                    self.root.after(1000, lambda: self.update_status(0, ""))
                 else:
                     msg = "No duplicate ICON barcodes found."
                     if error_files:
                         msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors."
+                    self.update_status(100, "Saved")
                     self.queue.put(("complete", True, msg))
+                    self.root.after(1000, lambda: self.update_status(0, ""))
             else:
                 msg = "No valid barcodes found in processable files."
                 if error_files:
                     msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors:"
                     for error in error_files:
                         msg += f"\n- {error}"
+                self.update_status(100, "Saved")
                 self.queue.put(("complete", True, msg))
+                self.root.after(1000, lambda: self.update_status(0, ""))
 
         except Exception as e:
             self.queue.put(("complete", False, f"A critical error occurred: {str(e)}"))
+            self.root.after(1000, lambda: self.update_status(0, ""))
             try:
                 all_barcodes = []
                 file_summary = []
