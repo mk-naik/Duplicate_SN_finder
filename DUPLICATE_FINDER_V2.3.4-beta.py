@@ -346,8 +346,7 @@ class DuplicateFinderApp:
             error_files = []
             total_files = len(self.selected_files)
 
-            # Adjust total steps to better reflect the process
-            # 80% for file processing, 10% for duplicate processing, 10% for report generation
+            # Calculate progress weights (80% for file processing, 10% for duplicates, 10% for report)
             file_progress_weight = 80  # Maximum percentage for file processing
             progress_per_file = file_progress_weight / total_files if total_files > 0 else 0
 
@@ -402,6 +401,7 @@ class DuplicateFinderApp:
 
             if not all_barcodes and not error_files:
                 self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files."))
+                self.update_status(0, "")
                 return
 
             self.update_status(90, "Processing duplicates...")
@@ -483,14 +483,15 @@ class DuplicateFinderApp:
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
                         self.update_status(99, "Saving report...")
 
-                    self.update_status(100, "Saved")
-                    self.queue.put(("complete", True, success_msg))
                     success_msg = f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
                     if error_files:
                         success_msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors. "
                     success_msg += f"\nReport saved to '{output_filename}'"
+                    
+                    self.update_status(100, "Saved.")
                     self.queue.put(("complete", True, success_msg))
                     self.root.after(1000, lambda: self.update_status(0, ""))
+
                 else:
                     msg = "No duplicate ICON barcodes found."
                     if error_files:
@@ -511,156 +512,7 @@ class DuplicateFinderApp:
         except Exception as e:
             self.queue.put(("complete", False, f"A critical error occurred: {str(e)}"))
             self.root.after(1000, lambda: self.update_status(0, ""))
-            try:
-                all_barcodes = []
-                file_summary = []
-                error_files = []
-                total_steps = len(self.selected_files) + 2
-
-                for idx, file in enumerate(self.selected_files):
-                    try:
-                        selected_sheet = self.sheet_selection_comboboxes[idx].get()
-                        file_name = os.path.basename(file)
-                        
-                        self.update_status(idx * 100 / total_steps, f"Reading {file_name}...")
-                    
-                        # Determine the appropriate engine based on file extension
-                        engine = self.get_excel_engine(file)
-                        # Read all rows as strings to preserve leading zeros
-                        df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
-                        self.update_status(idx * 100 / total_steps, f"Scanning for ICON barcodes in {file_name}...")
-                        
-                        barcodes = self.find_barcodes_in_dataframe(df)
-                        
-                        # Add file summary data
-                        file_summary.append({
-                            'FILE_NAME': file_name,
-                            'BARCODE_COUNT': len(barcodes),
-                            'PATH': os.path.abspath(file),
-                            'STATUS': 'Processed successfully'
-                        })
-
-                        if not barcodes:
-                            self.update_status(idx * 100 / total_steps, 
-                                            f"No ICON barcodes found in {file_name}, continuing...")
-                            continue
-
-                        for barcode in barcodes:
-                            all_barcodes.append({
-                                'BARCODE': barcode['value'],
-                                'FILE_NAME': file_name,
-                                'FORMAT': barcode['type']
-                            })
-                            
-                    except Exception as e:
-                        error_message = f"Error processing {file_name}: {str(e)}"
-                        error_files.append(error_message)
-                        # Add failed file to summary
-                        file_summary.append({
-                            'FILE_NAME': file_name,
-                            'BARCODE_COUNT': 0,
-                            'PATH': os.path.abspath(file),
-                            'STATUS': f'Failed: {str(e)}'
-                        })
-                        self.update_status(idx * 100 / total_steps, f"Skipping {file_name} due to error...")
-                        continue
-
-                if not all_barcodes and not error_files:
-                    self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files."))
-                    return
-
-                self.update_status(90, "Processing duplicates...")
-
-                # Create file summary DataFrame
-                file_summary_df = pd.DataFrame(file_summary)
-                # Sort by barcode count in descending order
-                file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
-
-                if all_barcodes:
-                    # Convert to DataFrame and find duplicates
-                    barcode_df = pd.DataFrame(all_barcodes, columns=["BARCODE", "FILE_NAME", "FORMAT"])
-                    duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
-
-                    # Create file summary DataFrame
-                    file_summary_df = pd.DataFrame(file_summary)
-                    # Sort by barcode count in descending order
-                    file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
-
-                    if not duplicate_barcodes.empty:
-                        self.update_status(95, "Preparing detailed report...")
-
-                        # Create grouped duplicates with the format you want
-                        grouped_duplicates = []
-                        for barcode, group in duplicate_barcodes.groupby("BARCODE"):
-                            # Count occurrences of each barcode
-                            copies = len(group)
-                        
-                            # Create row with barcode and its file locations
-                            row_data = [barcode, copies]  # Start with barcode and copies count
-                            file_names = group["FILE_NAME"].tolist()
-                            row_data.extend(file_names)
-                            grouped_duplicates.append(row_data)
-
-                        # Create headers with maximum number of files
-                        max_files = max(len(row) - 2 for row in grouped_duplicates)  # -2 for BARCODE and COPIES columns
-                        headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
-                    
-                        # Pad rows with empty strings to match header length
-                        aligned_duplicates = [row + [""] * (len(headers) - len(row)) for row in grouped_duplicates]
-                    
-                        # Create final DataFrame
-                        duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
-
-                        # Save to Excel
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        destination_path = os.path.expanduser("~")
-                        folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
-                        os.makedirs(folder_path, exist_ok=True)
-                        output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
-
-                    with pd.ExcelWriter(output_filename) as writer:
-                        # Detailed duplicates sheet with new format
-                        duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
-                    
-                        # File Summary sheet
-                        file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
-                        # Summary sheet
-
-                        summary_data = {
-                            'Metric': [
-                                'Total Files Processed',
-                                'Total ICON Barcodes Found',
-                                'Unique Barcodes',
-                                'Duplicate Barcodes',
-                                '17-Character Barcodes',
-                                '18-Character Barcodes',
-                                '20-Character Barcodes'
-                            ],
-                            'Value': [
-                                len(self.selected_files),
-                                len(barcode_df),
-                                len(barcode_df['BARCODE'].unique()),
-                                len(duplicate_barcodes['BARCODE'].unique()),
-                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-17']),
-                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-18']),
-                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-20'])
-                            ]
-                        }
-                        pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
-
-                    self.update_status(100, "")
-                    self.queue.put(("complete", True, 
-                        f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
-                        f"Report saved to '{output_filename}'"))
-                    self.update_status(0, "")
-                else:
-                    self.update_status(100, "")
-                    self.queue.put(("complete", True, "No duplicate ICON barcodes found."))
-                    self.update_status(0, "")
-
-            except Exception as e:
-                self.queue.put(("complete", False, f"An error occurred: {str(e)}"))
-        
+       
     def update_status(self, progress, status):
         self.queue.put(("status", progress, status))
 
