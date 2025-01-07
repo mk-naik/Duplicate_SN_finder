@@ -489,13 +489,8 @@ class DuplicateFinderApp:
                     success_msg += f"\nReport saved to '{output_filename}'"
                     
                     self.update_status(100, "Saved.")
-                    # Pass output_filename in the queue message
                     self.queue.put(("complete", True, success_msg, output_filename))
                     self.root.after(1000, lambda: self.update_status(0, ""))
-
-                    # Custom dialog with "OK" and "OPEN" buttons
-                    if messagebox.askokopen("Success", success_msg):
-                        open_file(output_filename)
 
                 else:
                     msg = "No duplicate ICON barcodes found."
@@ -515,7 +510,6 @@ class DuplicateFinderApp:
                 self.root.after(1000, lambda: self.update_status(0, ""))
 
         except Exception as e:
-            # Add None as filename for error case
             self.queue.put(("complete", False, f"A critical error occurred: {str(e)}", None))
             self.root.after(1000, lambda: self.update_status(0, ""))
        
@@ -536,8 +530,7 @@ class DuplicateFinderApp:
                 
                 if success and filename:
                     try:
-                        response = messagebox.askyesno("Success", message + "\n\nWould you like to open the file?")
-                        if response:
+                        if messagebox.askyesno("Success", message + "\n\nWould you like to open the file?"):
                             open_file(filename)
                     except Exception as e:
                         messagebox.showerror("Error", f"Failed to open file: {str(e)}")
