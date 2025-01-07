@@ -15,7 +15,7 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 class DuplicateFinderApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("ICON Barcode Duplicate Finder")
+        self.root.title("ICON Barcode Duplicate Finder v2.3.4")
         self.root.geometry("600x500")
 
         # Custom ICON barcode patterns
