@@ -489,14 +489,19 @@ class DuplicateFinderApp:
                     success_msg += f"\nReport saved to '{output_filename}'"
                     
                     self.update_status(100, "Saved.")
-                    self.queue.put(("complete", True, success_msg))
+                    # Pass output_filename in the queue message
+                    self.queue.put(("complete", True, success_msg, output_filename))
                     self.root.after(1000, lambda: self.update_status(0, ""))
+
+                    # Custom dialog with "OK" and "OPEN" buttons
+                    if messagebox.askokopen("Success", success_msg):
+                        open_file(output_filename)
 
                 else:
                     msg = "No duplicate ICON barcodes found."
                     if error_files:
                         msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors."
-                    self.update_status(100, "Saved")
+                    self.update_status(100, "")
                     self.queue.put(("complete", True, msg))
                     self.root.after(1000, lambda: self.update_status(0, ""))
             else:
@@ -505,12 +510,13 @@ class DuplicateFinderApp:
                     msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors:"
                     for error in error_files:
                         msg += f"\n- {error}"
-                self.update_status(100, "Saved")
+                self.update_status(100, "")
                 self.queue.put(("complete", True, msg))
                 self.root.after(1000, lambda: self.update_status(0, ""))
 
         except Exception as e:
-            self.queue.put(("complete", False, f"A critical error occurred: {str(e)}"))
+            # Add None as filename for error case
+            self.queue.put(("complete", False, f"A critical error occurred: {str(e)}", None))
             self.root.after(1000, lambda: self.update_status(0, ""))
        
     def update_status(self, progress, status):
@@ -525,14 +531,28 @@ class DuplicateFinderApp:
                 self.status_var.set(status)
                 self.root.update_idletasks()
             elif msg[0] == "complete":
-                _, success, message = msg
+                _, success, message, filename = msg
                 self.enable_controls()
-                if success:
-                    messagebox.showinfo("Success", message)
+                
+                if success and filename:
+                    try:
+                        response = messagebox.askyesno("Success", message + "\n\nWould you like to open the file?")
+                        if response:
+                            open_file(filename)
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to open file: {str(e)}")
                 else:
                     messagebox.showerror("Error", message)
+                
+                # Reset progress bar
+                self.progress["value"] = 0
+                self.status_var.set("")
+                self.root.update_idletasks()
         
         self.root.after(100, self.check_queue)
+
+def open_file(filepath):
+    os.startfile(filepath)
 
 if __name__ == "__main__":
     root = tk.Tk()
