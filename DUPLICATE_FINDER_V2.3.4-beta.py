@@ -7,6 +7,9 @@ import datetime
 import threading
 from queue import Queue
 import re
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 
 class DuplicateFinderApp:
@@ -32,6 +35,44 @@ class DuplicateFinderApp:
         # Create GUI elements
         self.create_gui()
 
+    def reset_selection(self):
+        self.selected_files = []
+        self.file_label.config(text="No files selected")
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        self.sheet_selection_comboboxes = []
+        self.sheet_headers = {}
+        
+        # Reset the progress bar and status
+        self.progress["value"] = 0  # Reset the progress bar to 0
+        self.status_var.set("")  # Clear the status label
+
+    def disable_controls(self):
+        self.file_button.config(state="disabled")
+        self.folder_button.config(state="disabled")
+        self.start_button.config(state="disabled")
+        self.reset_button.config(state="disabled")
+        for combobox in self.sheet_selection_comboboxes:
+            combobox.config(state="disabled")
+
+    def enable_controls(self):
+        self.file_button.config(state="normal")
+        self.folder_button.config(state="normal")
+        self.start_button.config(state="normal")
+        self.reset_button.config(state="normal")
+        for combobox in self.sheet_selection_comboboxes:
+            combobox.config(state="readonly")
+
+    def start_processing(self):
+        if not self.selected_files:
+            messagebox.showwarning("Warning", "Please select files first.")
+            return
+
+        self.disable_controls()
+        thread = threading.Thread(target=self.process_files, daemon=True)
+        thread.start()
+        self.check_queue()
+        
     def create_gui(self):
         # Create a frame for the buttons
         button_frame = tk.Frame(self.root)
@@ -305,136 +346,201 @@ class DuplicateFinderApp:
         try:
             all_barcodes = []
             file_summary = []
-            total_steps = len(self.selected_files) + 2
+            error_files = []
+            file_paths_dict = {}  # Dictionary to store file paths with filenames as keys
+            total_files = len(self.selected_files)
+
+            # Calculate progress weights (80% for file processing, 10% for duplicates, 10% for report)
+            file_progress_weight = 80
+            progress_per_file = file_progress_weight / total_files if total_files > 0 else 0
 
             for idx, file in enumerate(self.selected_files):
-                selected_sheet = self.sheet_selection_comboboxes[idx].get()
-                file_name = os.path.basename(file)
-                
-                self.update_status(idx * 100 / total_steps, f"Reading {file_name}...")
-                
                 try:
-                    # Determine the appropriate engine based on file extension
+                    selected_sheet = self.sheet_selection_comboboxes[idx].get()
+                    file_name = os.path.basename(file)
+                    file_path = os.path.abspath(file)
+                    file_paths_dict[file_name] = file_path  # Store file path with filename as key
+                    
+                    current_progress = idx * progress_per_file
+                    self.update_status(current_progress, f"Reading {file_name}...")
+                    
                     engine = self.get_excel_engine(file)
-                    # Read all rows as strings to preserve leading zeros
                     df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
-                    self.update_status(idx * 100 / total_steps, f"Scanning for ICON barcodes in {file_name}...")
+                    self.update_status(current_progress + (progress_per_file / 2), f"Scanning for ICON barcodes in {file_name}...")
                     
                     barcodes = self.find_barcodes_in_dataframe(df)
                     
-                    # Add file summary data
                     file_summary.append({
                         'FILE_NAME': file_name,
                         'BARCODE_COUNT': len(barcodes),
-                        'PATH': os.path.abspath(file)
+                        'PATH': file_path,
+                        'STATUS': 'Processed successfully'
                     })
 
                     if not barcodes:
-                        self.update_status(idx * 100 / total_steps, 
-                                         f"No ICON barcodes found in {file_name}, continuing...")
+                        self.update_status(current_progress + progress_per_file, 
+                                        f"No ICON barcodes found in {file_name}, continuing...")
                         continue
 
                     for barcode in barcodes:
                         all_barcodes.append({
                             'BARCODE': barcode['value'],
                             'FILE_NAME': file_name,
-                            'FORMAT': barcode['type']
+                            'FORMAT': barcode['type'],
+                            'FILE_PATH': file_path  # Add file path to barcode data
                         })
                         
                 except Exception as e:
-                    self.queue.put(("complete", False, f"Error processing {file_name}: {str(e)}"))
-                    return
+                    error_message = f"Error processing {file_name}: {str(e)}"
+                    error_files.append(error_message)
+                    file_summary.append({
+                        'FILE_NAME': file_name,
+                        'BARCODE_COUNT': 0,
+                        'PATH': file_path,
+                        'STATUS': f'Failed: {str(e)}'
+                    })
+                    self.update_status(current_progress + progress_per_file, f"Skipping {file_name} due to error...")
+                    continue
 
-            if not all_barcodes:
+            if not all_barcodes and not error_files:
                 self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files."))
+                self.update_status(0, "")
                 return
 
             self.update_status(90, "Processing duplicates...")
         
-            # Convert to DataFrame and find duplicates
-            barcode_df = pd.DataFrame(all_barcodes, columns=["BARCODE", "FILE_NAME", "FORMAT"])
-            duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
-
-            # Create file summary DataFrame
             file_summary_df = pd.DataFrame(file_summary)
-            # Sort by barcode count in descending order
             file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
 
-            if not duplicate_barcodes.empty:
-                self.update_status(95, "Preparing detailed report...")
+            if all_barcodes:
+                barcode_df = pd.DataFrame(all_barcodes)
+                duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
 
-                # Create grouped duplicates with the format you want
-                grouped_duplicates = []
-                for barcode, group in duplicate_barcodes.groupby("BARCODE"):
-                    # Count occurrences of each barcode
-                    copies = len(group)
+                if not duplicate_barcodes.empty:
+                    self.update_status(95, "Compiling Duplicates...")
+
+                    grouped_duplicates = []
+                    for barcode, group in duplicate_barcodes.groupby("BARCODE"):
+                        copies = len(group)
+                        row_data = [barcode, copies]
+                        for _, row in group.iterrows():
+                            row_data.append((row['FILE_NAME'], row['FILE_PATH']))
+                        grouped_duplicates.append(row_data)
+
+                    max_files = max(len(row) - 2 for row in grouped_duplicates)
+                    headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
                 
-                    # Create row with barcode and its file locations
-                    row_data = [barcode, copies]  # Start with barcode and copies count
-                    file_names = group["FILE_NAME"].tolist()
-                    row_data.extend(file_names)
-                    grouped_duplicates.append(row_data)
+                    # Prepare data for DataFrame (separate names and paths)
+                    aligned_duplicates = []
+                    for row in grouped_duplicates:
+                        new_row = [row[0], row[1]]  # Barcode and copies
+                        file_tuples = row[2:]  # List of (name, path) tuples
+                        # Add file names only (paths will be used later for hyperlinks)
+                        new_row.extend([tup[0] if isinstance(tup, tuple) else "" for tup in file_tuples + [("", "")] * (max_files - len(file_tuples))])
+                        aligned_duplicates.append(new_row)
 
-                # Create headers with maximum number of files
-                max_files = max(len(row) - 2 for row in grouped_duplicates)  # -2 for BARCODE and COPIES columns
-                headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
-            
-                # Pad rows with empty strings to match header length
-                aligned_duplicates = [row + [""] * (len(headers) - len(row)) for row in grouped_duplicates]
-            
-                # Create final DataFrame
-                duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
+                    duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
 
-                # Save to Excel
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                destination_path = os.path.expanduser("~")
-                folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
-                os.makedirs(folder_path, exist_ok=True)
-                output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    destination_path = os.path.expanduser("~")
+                    folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
+                    os.makedirs(folder_path, exist_ok=True)
+                    output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
 
-                with pd.ExcelWriter(output_filename) as writer:
-                    # Detailed duplicates sheet with new format
-                    duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
-                
-                     # File Summary sheet
-                    file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
-                    # Summary sheet
+                    # Save the basic structure first
+                    with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+                        duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
+                        file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
+                        
+                        summary_data = {
+                            'Metric': [
+                                'Total Files Processed',
+                                'Successfully Processed Files',
+                                'Failed Files',
+                                'Total ICON Barcodes Found',
+                                'Unique Barcodes',
+                                'Duplicate Barcodes',
+                                '17-Character Barcodes',
+                                '18-Character Barcodes',
+                                '20-Character Barcodes'
+                            ],
+                            'Value': [
+                                len(self.selected_files),
+                                len(file_summary_df[file_summary_df['STATUS'].str.startswith('Processed')]),
+                                len(error_files),
+                                len(barcode_df),
+                                len(barcode_df['BARCODE'].unique()),
+                                len(duplicate_barcodes['BARCODE'].unique()),
+                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-17']),
+                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-18']),
+                                len(barcode_df[barcode_df['FORMAT'] == 'ICON-20'])
+                            ]
+                        }
+                        pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
 
-                    summary_data = {
-                        'Metric': [
-                            'Total Files Processed',
-                            'Total ICON Barcodes Found',
-                            'Unique Barcodes',
-                            'Duplicate Barcodes',
-                            '17-Character Barcodes',
-                            '18-Character Barcodes',
-                            '20-Character Barcodes'
-                        ],
-                        'Value': [
-                            len(self.selected_files),
-                            len(barcode_df),
-                            len(barcode_df['BARCODE'].unique()),
-                            len(duplicate_barcodes['BARCODE'].unique()),
-                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-17']),
-                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-18']),
-                            len(barcode_df[barcode_df['FORMAT'] == 'ICON-20'])
-                        ]
-                    }
-                    pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+                    # Now add hyperlinks using openpyxl
+                    wb = load_workbook(output_filename)
+                    
+                    # Add hyperlinks to Detailed_Report sheet
+                    ws_detailed = wb['Detailed_Report']
+                    for row in range(2, ws_detailed.max_row + 1):  # Start from row 2 to skip header
+                        for col in range(3, ws_detailed.max_column + 1):  # Start from column 3 (FILE_NAME1)
+                            cell = ws_detailed.cell(row=row, column=col)
+                            if cell.value:  # If there's a filename
+                                file_path = file_paths_dict.get(cell.value)  # Use dictionary get() method
+                                if file_path:
+                                    cell.hyperlink = file_path
+                                    cell.font = Font(color="0000FF", underline="single")  # Blue, underlined
 
-                self.update_status(100, "")
-                self.queue.put(("complete", True, 
-                    f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
-                    f"Report saved to '{output_filename}'"))
-                self.update_status(0, "")
+                    # Add hyperlinks to File_Summary sheet
+                    ws_summary = wb['File_Summary']
+                    path_col = None
+                    # Find the PATH column
+                    for col in range(1, ws_summary.max_column + 1):
+                        if ws_summary.cell(row=1, column=col).value == 'PATH':
+                            path_col = col
+                            break
+                    
+                    if path_col:
+                        for row in range(2, ws_summary.max_row + 1):
+                            cell = ws_summary.cell(row=row, column=path_col)
+                            if cell.value:
+                                cell.hyperlink = cell.value
+                                cell.font = Font(color="0000FF", underline="single")
+
+                    # Save the workbook with hyperlinks
+                    wb.save(output_filename)
+
+                    success_msg = f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
+                    if error_files:
+                        success_msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors. "
+                    success_msg += f"\nReport saved to '{output_filename}'"
+                    
+                    self.update_status(100, "Saved.")
+                    self.queue.put(("complete", True, success_msg, output_filename))
+                    self.root.after(1000, lambda: self.update_status(0, ""))
+
+                else:
+                    msg = "No duplicate ICON barcodes found."
+                    if error_files:
+                        msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors."
+                    self.update_status(100, "")
+                    self.queue.put(("complete", True, msg))
+                    self.root.after(1000, lambda: self.update_status(0, ""))
             else:
+                msg = "No valid barcodes found in processable files."
+                if error_files:
+                    msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors:"
+                    for error in error_files:
+                        msg += f"\n- {error}"
                 self.update_status(100, "")
-                self.queue.put(("complete", True, "No duplicate ICON barcodes found."))
-                self.update_status(0, "")
+                self.queue.put(("complete", True, msg))
+                self.root.after(1000, lambda: self.update_status(0, ""))
 
         except Exception as e:
-            self.queue.put(("complete", False, f"An error occurred: {str(e)}"))
-    
+            self.queue.put(("complete", False, f"A critical error occurred: {str(e)}", None))
+            self.root.after(1000, lambda: self.update_status(0, ""))
+       
     def update_status(self, progress, status):
         self.queue.put(("status", progress, status))
 
@@ -447,53 +553,27 @@ class DuplicateFinderApp:
                 self.status_var.set(status)
                 self.root.update_idletasks()
             elif msg[0] == "complete":
-                _, success, message = msg
+                _, success, message, filename = msg
                 self.enable_controls()
-                if success:
-                    messagebox.showinfo("Success", message)
+                
+                if success and filename:
+                    try:
+                        if messagebox.askyesno("Success", message + "\n\nWould you like to open the file?"):
+                            open_file(filename)
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to open file: {str(e)}")
                 else:
                     messagebox.showerror("Error", message)
+                
+                # Reset progress bar
+                self.progress["value"] = 0
+                self.status_var.set("")
+                self.root.update_idletasks()
         
         self.root.after(100, self.check_queue)
 
-    def start_processing(self):
-        if not self.selected_files:
-            messagebox.showwarning("Warning", "Please select files first.")
-            return
-
-        self.disable_controls()
-        thread = threading.Thread(target=self.process_files, daemon=True)
-        thread.start()
-        self.check_queue()
-
-    def reset_selection(self):
-        self.selected_files = []
-        self.file_label.config(text="No files selected")
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-        self.sheet_selection_comboboxes = []
-        self.sheet_headers = {}
-        
-        # Reset the progress bar and status
-        self.progress["value"] = 0  # Reset the progress bar to 0
-        self.status_var.set("")  # Clear the status label
-
-    def disable_controls(self):
-        self.file_button.config(state="disabled")
-        self.folder_button.config(state="disabled")
-        self.start_button.config(state="disabled")
-        self.reset_button.config(state="disabled")
-        for combobox in self.sheet_selection_comboboxes:
-            combobox.config(state="disabled")
-
-    def enable_controls(self):
-        self.file_button.config(state="normal")
-        self.folder_button.config(state="normal")
-        self.start_button.config(state="normal")
-        self.reset_button.config(state="normal")
-        for combobox in self.sheet_selection_comboboxes:
-            combobox.config(state="readonly")
-
+def open_file(filepath):
+    os.startfile(filepath)
 
 if __name__ == "__main__":
     root = tk.Tk()
