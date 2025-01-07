@@ -7,6 +7,9 @@ import datetime
 import threading
 from queue import Queue
 import re
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 
 class DuplicateFinderApp:
@@ -344,33 +347,33 @@ class DuplicateFinderApp:
             all_barcodes = []
             file_summary = []
             error_files = []
+            file_paths_dict = {}  # Dictionary to store file paths with filenames as keys
             total_files = len(self.selected_files)
 
             # Calculate progress weights (80% for file processing, 10% for duplicates, 10% for report)
-            file_progress_weight = 80  # Maximum percentage for file processing
+            file_progress_weight = 80
             progress_per_file = file_progress_weight / total_files if total_files > 0 else 0
 
             for idx, file in enumerate(self.selected_files):
                 try:
                     selected_sheet = self.sheet_selection_comboboxes[idx].get()
                     file_name = os.path.basename(file)
-                    # Calculate progress for current file
+                    file_path = os.path.abspath(file)
+                    file_paths_dict[file_name] = file_path  # Store file path with filename as key
+                    
                     current_progress = idx * progress_per_file
                     self.update_status(current_progress, f"Reading {file_name}...")
                     
-                    # Determine the appropriate engine based on file extension
                     engine = self.get_excel_engine(file)
-                    # Read all rows as strings to preserve leading zeros
                     df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
                     self.update_status(current_progress + (progress_per_file / 2), f"Scanning for ICON barcodes in {file_name}...")
                     
                     barcodes = self.find_barcodes_in_dataframe(df)
                     
-                    # Add file summary data
                     file_summary.append({
                         'FILE_NAME': file_name,
                         'BARCODE_COUNT': len(barcodes),
-                        'PATH': os.path.abspath(file),
+                        'PATH': file_path,
                         'STATUS': 'Processed successfully'
                     })
 
@@ -383,17 +386,17 @@ class DuplicateFinderApp:
                         all_barcodes.append({
                             'BARCODE': barcode['value'],
                             'FILE_NAME': file_name,
-                            'FORMAT': barcode['type']
+                            'FORMAT': barcode['type'],
+                            'FILE_PATH': file_path  # Add file path to barcode data
                         })
                         
                 except Exception as e:
                     error_message = f"Error processing {file_name}: {str(e)}"
                     error_files.append(error_message)
-                    # Add failed file to summary
                     file_summary.append({
                         'FILE_NAME': file_name,
                         'BARCODE_COUNT': 0,
-                        'PATH': os.path.abspath(file),
+                        'PATH': file_path,
                         'STATUS': f'Failed: {str(e)}'
                     })
                     self.update_status(current_progress + progress_per_file, f"Skipping {file_name} due to error...")
@@ -406,56 +409,49 @@ class DuplicateFinderApp:
 
             self.update_status(90, "Processing duplicates...")
         
-            # Create file summary DataFrame
             file_summary_df = pd.DataFrame(file_summary)
-            # Sort by barcode count in descending order
             file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
 
             if all_barcodes:
-                # Convert to DataFrame and find duplicates
-                barcode_df = pd.DataFrame(all_barcodes, columns=["BARCODE", "FILE_NAME", "FORMAT"])
+                barcode_df = pd.DataFrame(all_barcodes)
                 duplicate_barcodes = barcode_df[barcode_df.duplicated("BARCODE", keep=False)]
 
                 if not duplicate_barcodes.empty:
-                    self.update_status(95, "Compailing Duplicates...")
+                    self.update_status(95, "Compiling Duplicates...")
 
-                    # Create grouped duplicates
                     grouped_duplicates = []
                     for barcode, group in duplicate_barcodes.groupby("BARCODE"):
                         copies = len(group)
                         row_data = [barcode, copies]
-                        file_names = group["FILE_NAME"].tolist()
-                        row_data.extend(file_names)
+                        for _, row in group.iterrows():
+                            row_data.append((row['FILE_NAME'], row['FILE_PATH']))
                         grouped_duplicates.append(row_data)
 
-                    # Create headers with maximum number of files
                     max_files = max(len(row) - 2 for row in grouped_duplicates)
                     headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
                 
-                    # Pad rows with empty strings to match header length
-                    aligned_duplicates = [row + [""] * (len(headers) - len(row)) for row in grouped_duplicates]
-                
-                    # Create final DataFrame
-                    duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
-                    self.update_status(96, "Preparing Detailed_Report...")
+                    # Prepare data for DataFrame (separate names and paths)
+                    aligned_duplicates = []
+                    for row in grouped_duplicates:
+                        new_row = [row[0], row[1]]  # Barcode and copies
+                        file_tuples = row[2:]  # List of (name, path) tuples
+                        # Add file names only (paths will be used later for hyperlinks)
+                        new_row.extend([tup[0] if isinstance(tup, tuple) else "" for tup in file_tuples + [("", "")] * (max_files - len(file_tuples))])
+                        aligned_duplicates.append(new_row)
 
-                    # Save to Excel
+                    duplicates_df = pd.DataFrame(aligned_duplicates, columns=headers)
+
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     destination_path = os.path.expanduser("~")
                     folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
                     os.makedirs(folder_path, exist_ok=True)
                     output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
 
-                    with pd.ExcelWriter(output_filename) as writer:
-                        # Detailed duplicates sheet with new format
+                    # Save the basic structure first
+                    with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
                         duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
-                    
-                        # File Summary sheet with status
                         file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
-                        self.update_status(97, "Preparing File_Summary...")
-
-                        # Summary sheet with error information
-                        self.update_status(98, "Preparing Summary...")
+                        
                         summary_data = {
                             'Metric': [
                                 'Total Files Processed',
@@ -481,7 +477,39 @@ class DuplicateFinderApp:
                             ]
                         }
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
-                        self.update_status(99, "Saving report...")
+
+                    # Now add hyperlinks using openpyxl
+                    wb = load_workbook(output_filename)
+                    
+                    # Add hyperlinks to Detailed_Report sheet
+                    ws_detailed = wb['Detailed_Report']
+                    for row in range(2, ws_detailed.max_row + 1):  # Start from row 2 to skip header
+                        for col in range(3, ws_detailed.max_column + 1):  # Start from column 3 (FILE_NAME1)
+                            cell = ws_detailed.cell(row=row, column=col)
+                            if cell.value:  # If there's a filename
+                                file_path = file_paths_dict.get(cell.value)  # Use dictionary get() method
+                                if file_path:
+                                    cell.hyperlink = file_path
+                                    cell.font = Font(color="0000FF", underline="single")  # Blue, underlined
+
+                    # Add hyperlinks to File_Summary sheet
+                    ws_summary = wb['File_Summary']
+                    path_col = None
+                    # Find the PATH column
+                    for col in range(1, ws_summary.max_column + 1):
+                        if ws_summary.cell(row=1, column=col).value == 'PATH':
+                            path_col = col
+                            break
+                    
+                    if path_col:
+                        for row in range(2, ws_summary.max_row + 1):
+                            cell = ws_summary.cell(row=row, column=path_col)
+                            if cell.value:
+                                cell.hyperlink = cell.value
+                                cell.font = Font(color="0000FF", underline="single")
+
+                    # Save the workbook with hyperlinks
+                    wb.save(output_filename)
 
                     success_msg = f"Found {len(duplicate_barcodes['BARCODE'].unique())} duplicate ICON barcodes. "
                     if error_files:
