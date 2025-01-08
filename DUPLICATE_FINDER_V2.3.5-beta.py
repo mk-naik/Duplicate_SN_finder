@@ -521,11 +521,11 @@ class DuplicateFinderApp:
                     self.root.after(1000, lambda: self.update_status(0, ""))
 
                 else:
-                    msg = "No duplicate ICON barcodes found."
+                    success_msg = "No duplicate ICON barcodes found."
                     if error_files:
-                        msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors."
+                        success_msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors."
                     self.update_status(100, "")
-                    self.queue.put(("complete", True, msg))
+                    self.queue.put(("complete", True, success_msg, None))  # Keep 4-tuple format
                     self.root.after(1000, lambda: self.update_status(0, ""))
             else:
                 msg = "No valid barcodes found in processable files."
@@ -534,7 +534,7 @@ class DuplicateFinderApp:
                     for error in error_files:
                         msg += f"\n- {error}"
                 self.update_status(100, "")
-                self.queue.put(("complete", True, msg))
+                self.queue.put(("complete", True, msg, None))  # Add None as filename
                 self.root.after(1000, lambda: self.update_status(0, ""))
 
         except Exception as e:
@@ -556,12 +556,15 @@ class DuplicateFinderApp:
                 _, success, message, filename = msg
                 self.enable_controls()
                 
-                if success and filename:
-                    try:
-                        if messagebox.askyesno("Success", message + "\n\nWould you like to open the file?"):
-                            open_file(filename)
-                    except Exception as e:
-                        messagebox.showerror("Error", f"Failed to open file: {str(e)}")
+                if success:
+                    if filename:
+                        try:
+                            if messagebox.askyesno("Success", message + "\n\nWould you like to open the file?"):
+                                open_file(filename)
+                        except Exception as e:
+                            messagebox.showerror("Error", f"Failed to open file: {str(e)}")
+                    else:
+                        messagebox.showinfo("Success", message)
                 else:
                     messagebox.showerror("Error", message)
                 
