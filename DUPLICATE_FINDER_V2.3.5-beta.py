@@ -7,14 +7,153 @@ import datetime
 import threading
 from queue import Queue
 import re
+import logging
 from openpyxl import load_workbook
 from openpyxl.styles import Font
-from openpyxl.worksheet.hyperlink import Hyperlink
+import gc
+import psutil
+import time
+from functools import lru_cache
 
 
 class DuplicateFinderApp:
     def __init__(self, root):
         self.root = root
+        self.setup_logging()
+        self.setup_memory_monitor()
+        self.initialize_gui()
+
+    def setup_logging(self):
+        logging.basicConfig(
+            filename='duplicate_finder.log',
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+
+    def setup_memory_monitor(self):
+        self.memory_threshold = 85  # Percentage
+        self.process = psutil.Process()
+
+    def check_memory_usage(self):
+        memory_percent = self.process.memory_percent()
+        if memory_percent > self.memory_threshold:
+            self.logger.warning(f"High memory usage: {memory_percent:.2f}%")
+            return False
+        return True
+
+    @lru_cache(maxsize=128)
+    def get_sheet_names(self, file_path):
+        try:
+            with pd.ExcelFile(file_path) as xls:
+                return xls.sheet_names
+        except Exception as e:
+            self.logger.error(f"Error reading sheet names from {file_path}: {str(e)}")
+            raise
+
+    def process_excel_chunk(self, file_path, sheet_name, chunk_size=1000):
+        try:
+            chunks = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                dtype=str,
+                chunksize=chunk_size,
+                usecols=lambda x: any(x.lower().contains(key) for key in ['barcode', 'code', 'id'])
+            )
+            return pd.concat([self.process_chunk(chunk) for chunk in chunks])
+        except Exception as e:
+            self.logger.error(f"Error processing file {file_path}: {str(e)}")
+            raise
+
+    def process_chunk(self, chunk):
+        if not self.check_memory_usage():
+            self.clear_memory()
+        return self.find_barcodes_in_dataframe(chunk)
+
+    def clear_memory(self):
+        gc.collect()
+        if hasattr(self, 'current_df'):
+            del self.current_df
+        if hasattr(self, 'processed_data'):
+            del self.processed_data
+
+    def retry_operation(self, operation, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                return operation()
+            except Exception as e:
+                self.logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(1)
+
+    def process_files(self):
+        try:
+            self.disable_controls()
+            self.clear_memory()
+
+            results = []
+            for file in self.selected_files:
+                if not self.check_memory_usage():
+                    raise MemoryError("Insufficient memory to continue processing")
+
+                result = self.retry_operation(
+                    lambda: self.process_single_file(file)
+                )
+                results.append(result)
+
+            self.generate_report(results)
+
+        except Exception as e:
+            self.logger.error(f"Critical error in process_files: {str(e)}")
+            self.queue.put(("error", str(e)))
+        finally:
+            self.enable_controls()
+            self.clear_memory()
+
+    def save_report(self, df, filename):
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+                self.apply_formatting(writer)
+            self.show_success_with_open("Process completed successfully!", filename)
+        except Exception as e:
+            self.logger.error(f"Error saving report: {str(e)}")
+            raise
+
+    def show_success_with_open(self, message, filepath):
+        dialog = tk.Toplevel()
+        dialog.title("Success")
+        dialog.geometry("300x150")
+        dialog.grab_set()  # Make dialog modal
+
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (dialog.winfo_screenwidth() / 2 - 150,
+                                    dialog.winfo_screenheight() / 2 - 75))
+
+        # Message
+        label = tk.Label(dialog, text=message, wraplength=250, pady=20)
+        label.pack()
+
+        # Buttons frame
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        def open_file():
+            os.startfile(filepath)
+            dialog.destroy()
+
+        # Open button
+        open_btn = tk.Button(button_frame, text="Open", command=open_file)
+        open_btn.pack(side=tk.LEFT, padx=5)
+
+        # OK button
+        ok_btn = tk.Button(button_frame, text="OK", command=dialog.destroy)
+        ok_btn.pack(side=tk.LEFT, padx=5)
+
+        dialog.wait_window()
+
+    def initialize_gui(self):
         self.root.title("ICON Barcode Duplicate Finder v2.3.4")
         self.root.geometry("600x500")
 
@@ -28,10 +167,10 @@ class DuplicateFinderApp:
         self.selected_files = []
         self.sheet_selection_comboboxes = []
         self.sheet_headers = {}
-        
+
         # Queue for thread communication
         self.queue = Queue()
-        
+
         # Create GUI elements
         self.create_gui()
 
@@ -42,7 +181,7 @@ class DuplicateFinderApp:
             widget.destroy()
         self.sheet_selection_comboboxes = []
         self.sheet_headers = {}
-        
+
         # Reset the progress bar and status
         self.progress["value"] = 0  # Reset the progress bar to 0
         self.status_var.set("")  # Clear the status label
@@ -72,7 +211,7 @@ class DuplicateFinderApp:
         thread = threading.Thread(target=self.process_files, daemon=True)
         thread.start()
         self.check_queue()
-        
+
     def create_gui(self):
         # Create a frame for the buttons
         button_frame = tk.Frame(self.root)
@@ -88,7 +227,7 @@ class DuplicateFinderApp:
 
         self.file_label = tk.Label(self.root, text="No files selected")
         self.file_label.pack()
-        
+
         # Create a scrollable canvas
         self.canvas_frame = tk.Frame(self.root)
         self.canvas_frame.pack(fill="both", expand=True)
@@ -145,7 +284,7 @@ class DuplicateFinderApp:
         )
         self.start_button.pack(pady=10)
 
-            # Reset button (add this after the Start button)
+        # Reset button (add this after the Start button)
         self.reset_button = tk.Button(
             self.root,
             text="Reset Selection",
@@ -160,10 +299,10 @@ class DuplicateFinderApp:
         """
         if pd.isna(value):
             return False, None
-        
+
         # Convert to string and remove any whitespace
         str_value = str(value).strip()
-        
+
         # Skip empty strings
         if not str_value:
             return False, None
@@ -180,12 +319,12 @@ class DuplicateFinderApp:
         if len(str_value) == 17:
             if re.match(self.barcode_patterns['ICON-17'], str_value):
                 return True, 'ICON-17'
-                
+
         # For 18-character format
         elif len(str_value) == 18:
             if re.match(self.barcode_patterns['ICON-18'], str_value):
                 return True, 'ICON-18'
-        
+
         # For 20-character format
         elif len(str_value) == 20:
             if re.match(self.barcode_patterns['ICON-20'], str_value):
@@ -196,7 +335,7 @@ class DuplicateFinderApp:
     def find_barcodes_in_dataframe(self, df):
         """Find all ICON barcode values in a DataFrame."""
         barcodes = []
-        
+
         for column in df.columns:
             for idx, value in enumerate(df[column]):
                 is_barcode, barcode_type = self.detect_barcodes(value)
@@ -207,7 +346,7 @@ class DuplicateFinderApp:
                         'row': idx + 2,  # Adding 2 for Excel row number (1-based + header)
                         'type': barcode_type
                     })
-        
+
         return barcodes
 
     def _on_mousewheel(self, event):
@@ -232,18 +371,18 @@ class DuplicateFinderApp:
         if files:
             # Convert selected files to absolute paths
             selected_absolute_paths = {os.path.abspath(f) for f in files}
-            
+
             # Filter out temporary files
             valid_files = {f for f in selected_absolute_paths if self.is_valid_excel_file(f)}
-            
+
             if not valid_files:
                 messagebox.showwarning("Warning", "No valid Excel files selected. Temporary files (~$) will be skipped.")
                 return
-                
+
             # Convert existing files to absolute paths and combine with new unique files
             existing_absolute_paths = {os.path.abspath(f) for f in self.selected_files}
             self.selected_files = list(existing_absolute_paths.union(valid_files))
-            
+
             skipped = len(files) - len(valid_files)
             if skipped > 0:
                 self.file_label.config(
@@ -269,13 +408,13 @@ class DuplicateFinderApp:
             return 'xlrd'
         else:  # .xlsx and .xlsm files
             return 'openpyxl'
-            
+
     def select_folder(self):
         folder_selected = filedialog.askdirectory(title="Select Folder")
-        
+
         if not folder_selected:
             return
-            
+
         excel_files = set()
         skipped_files = 0
         # Walk through all subdirectories and files
@@ -286,26 +425,26 @@ class DuplicateFinderApp:
                     excel_files.add(full_path)
                 elif file.endswith(('.xlsx', '.xls', '.xlsm')):  # Count skipped Excel files
                     skipped_files += 1
-        
+
         if excel_files:
             # Convert existing files to absolute paths and combine with new unique files
             existing_absolute_paths = {os.path.abspath(f) for f in self.selected_files}
             self.selected_files = list(existing_absolute_paths.union(excel_files))
-            
+
             if skipped_files > 0:
                 self.file_label.config(
                     text=f"{len(excel_files)} file(s) selected ({skipped_files} temporary file(s) skipped)")
             else:
                 self.file_label.config(text=f"{len(self.selected_files)} file(s) selected")
-                
+
             self.display_file_selection()
         else:
             if skipped_files > 0:
-                messagebox.showinfo("Information", 
-                    "Only temporary Excel files were found. These files are skipped.")
+                messagebox.showinfo("Information",
+                                    "Only temporary Excel files were found. These files are skipped.")
             else:
                 messagebox.showinfo("Information", "No Excel files found in the selected folder and its subfolders.")
-    
+
     def display_file_selection(self):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
@@ -316,7 +455,7 @@ class DuplicateFinderApp:
             try:
                 # Get appropriate engine for the file type
                 engine = self.get_excel_engine(file)
-                
+
                 # Read Excel file with appropriate engine
                 excel_file = pd.ExcelFile(file, engine=engine)
                 sheet_names = excel_file.sheet_names
@@ -363,16 +502,16 @@ class DuplicateFinderApp:
                     file_name = os.path.basename(file)
                     file_path = os.path.abspath(file)
                     file_paths_dict[file_name] = file_path  # Store file path with filename as key
-                    
+
                     current_progress = idx * progress_per_file
                     self.update_status(current_progress, f"Reading {file_name}...")
-                    
+
                     engine = self.get_excel_engine(file)
                     df = pd.read_excel(file, sheet_name=selected_sheet, dtype=str, engine=engine)
                     self.update_status(current_progress + (progress_per_file / 2), f"Scanning for ICON barcodes in {file_name}...")
-                    
+
                     barcodes = self.find_barcodes_in_dataframe(df)
-                    
+
                     file_summary.append({
                         'FILE_NAME': file_name,
                         'BARCODE_COUNT': len(barcodes),
@@ -381,8 +520,8 @@ class DuplicateFinderApp:
                     })
 
                     if not barcodes:
-                        self.update_status(current_progress + progress_per_file, 
-                                        f"No ICON barcodes found in {file_name}, continuing...")
+                        self.update_status(current_progress + progress_per_file,
+                                           f"No ICON barcodes found in {file_name}, continuing...")
                         continue
 
                     for barcode in barcodes:
@@ -392,7 +531,7 @@ class DuplicateFinderApp:
                             'FORMAT': barcode['type'],
                             'FILE_PATH': file_path  # Add file path to barcode data
                         })
-                        
+
                 except Exception as e:
                     error_message = f"Error processing {file_name}: {str(e)}"
                     error_files.append(error_message)
@@ -411,7 +550,7 @@ class DuplicateFinderApp:
                 return
 
             self.update_status(90, "Processing duplicates...")
-        
+
             file_summary_df = pd.DataFrame(file_summary)
             file_summary_df = file_summary_df.sort_values('BARCODE_COUNT', ascending=False)
 
@@ -432,7 +571,7 @@ class DuplicateFinderApp:
 
                     max_files = max(len(row) - 2 for row in grouped_duplicates)
                     headers = ["DUPLICATE_BARCODES", "COPIES"] + [f"FILE_NAME{i + 1}" for i in range(max_files)]
-                
+
                     # Prepare data for DataFrame (separate names and paths)
                     aligned_duplicates = []
                     for row in grouped_duplicates:
@@ -454,7 +593,7 @@ class DuplicateFinderApp:
                     with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
                         duplicates_df.to_excel(writer, sheet_name='Detailed_Report', index=False)
                         file_summary_df.to_excel(writer, sheet_name='File_Summary', index=False)
-                        
+
                         summary_data = {
                             'Metric': [
                                 'Total Files Processed',
@@ -483,7 +622,7 @@ class DuplicateFinderApp:
 
                     # Now add hyperlinks using openpyxl
                     wb = load_workbook(output_filename)
-                    
+
                     # Add hyperlinks to Detailed_Report sheet
                     ws_detailed = wb['Detailed_Report']
                     for row in range(2, ws_detailed.max_row + 1):  # Start from row 2 to skip header
@@ -503,7 +642,7 @@ class DuplicateFinderApp:
                         if ws_summary.cell(row=1, column=col).value == 'PATH':
                             path_col = col
                             break
-                    
+
                     if path_col:
                         for row in range(2, ws_summary.max_row + 1):
                             cell = ws_summary.cell(row=row, column=path_col)
@@ -518,7 +657,7 @@ class DuplicateFinderApp:
                     if error_files:
                         success_msg += f"\n\nWarning: {len(error_files)} file(s) were skipped due to errors. "
                     success_msg += f"\nReport saved to '{output_filename}'"
-                    
+
                     self.update_status(100, "Saved.")
                     self.queue.put(("complete", True, success_msg, output_filename))
                     self.root.after(1000, lambda: self.update_status(0, ""))
@@ -543,7 +682,7 @@ class DuplicateFinderApp:
         except Exception as e:
             self.queue.put(("complete", False, f"A critical error occurred: {str(e)}", None))
             self.root.after(1000, lambda: self.update_status(0, ""))
-       
+
     def update_status(self, progress, status):
         self.queue.put(("status", progress, status))
 
@@ -558,7 +697,7 @@ class DuplicateFinderApp:
             elif msg[0] == "complete":
                 _, success, message, filename = msg
                 self.enable_controls()
-                
+
                 if success:
                     if filename:
                         try:
@@ -570,12 +709,12 @@ class DuplicateFinderApp:
                         messagebox.showinfo("Success", message)
                 else:
                     messagebox.showerror("Error", message)
-                
+
                 # Reset progress bar
                 self.progress["value"] = 0
                 self.status_var.set("")
                 self.root.update_idletasks()
-        
+
         self.root.after(100, self.check_queue)
 
 def open_file(filepath):
