@@ -230,23 +230,26 @@ class DuplicateFinderApp:
             filetypes=[("Excel Files", "*.xlsx *.xls *.xlsm")]
         )
         if files:
+            # Convert selected files to absolute paths
+            selected_absolute_paths = {os.path.abspath(f) for f in files}
+            
             # Filter out temporary files
-            valid_files = [f for f in files if self.is_valid_excel_file(f)]
+            valid_files = {f for f in selected_absolute_paths if self.is_valid_excel_file(f)}
             
             if not valid_files:
                 messagebox.showwarning("Warning", "No valid Excel files selected. Temporary files (~$) will be skipped.")
                 return
                 
-            # Add to existing selection, avoiding duplicates
-            current_files = list(self.selected_files)
-            self.selected_files = list(set(current_files + valid_files))
+            # Convert existing files to absolute paths and combine with new unique files
+            existing_absolute_paths = {os.path.abspath(f) for f in self.selected_files}
+            self.selected_files = list(existing_absolute_paths.union(valid_files))
             
             skipped = len(files) - len(valid_files)
             if skipped > 0:
                 self.file_label.config(
                     text=f"{len(valid_files)} file(s) selected ({skipped} temporary file(s) skipped)")
             else:
-                self.file_label.config(text=f"{len(files)} file(s) selected")
+                self.file_label.config(text=f"{len(self.selected_files)} file(s) selected")
             self.display_file_selection()
         else:
             self.file_label.config(text="No files selected")
@@ -273,27 +276,27 @@ class DuplicateFinderApp:
         if not folder_selected:
             return
             
-        excel_files = []
+        excel_files = set()
         skipped_files = 0
         # Walk through all subdirectories and files
         for root, dirs, files in os.walk(folder_selected):
             for file in files:
-                full_path = os.path.join(root, file)
+                full_path = os.path.abspath(os.path.join(root, file))
                 if self.is_valid_excel_file(full_path):
-                    excel_files.append(full_path)
+                    excel_files.add(full_path)
                 elif file.endswith(('.xlsx', '.xls', '.xlsm')):  # Count skipped Excel files
                     skipped_files += 1
         
         if excel_files:
-            # Add new files to existing selection
-            current_files = list(self.selected_files)
-            self.selected_files = list(set(current_files + excel_files))
+            # Convert existing files to absolute paths and combine with new unique files
+            existing_absolute_paths = {os.path.abspath(f) for f in self.selected_files}
+            self.selected_files = list(existing_absolute_paths.union(excel_files))
             
             if skipped_files > 0:
                 self.file_label.config(
                     text=f"{len(excel_files)} file(s) selected ({skipped_files} temporary file(s) skipped)")
             else:
-                self.file_label.config(text=f"{len(excel_files)} file(s) selected")
+                self.file_label.config(text=f"{len(self.selected_files)} file(s) selected")
                 
             self.display_file_selection()
         else:
