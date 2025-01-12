@@ -24,12 +24,36 @@ class DuplicateFinderApp:
         self.initialize_gui()
 
     def setup_logging(self):
+        # Create logs directory if it doesn't exist
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Create timestamped log file
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(log_dir, f'duplicate_finder_{timestamp}.log')
+        
+        # Configure logging with more detailed format
         logging.basicConfig(
-            filename='duplicate_finder.log',
+            filename=log_file,
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+            filemode='w'
         )
         self.logger = logging.getLogger(__name__)
+        self.log_file = log_file
+
+    def log_error(self, error_type, file_name, error_msg):
+        error_detail = f"{error_type} - File: {file_name} - {error_msg}"
+        self.logger.error(error_detail)
+        
+        # Also save to Excel if error list exists
+        if hasattr(self, 'error_files'):
+            self.error_files.append({
+                'Timestamp': datetime.datetime.now(),
+                'Error Type': error_type,
+                'File': file_name,
+                'Error': error_msg
+            })
 
     def setup_memory_monitor(self):
         self.memory_threshold = 85  # Percentage
@@ -544,8 +568,9 @@ class DuplicateFinderApp:
                     self.update_status(current_progress + progress_per_file, f"Skipping {file_name} due to error...")
                     continue
 
+            #Update the no barcodes case to include filename parameter
             if not all_barcodes and not error_files:
-                self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files."))
+                self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files.", None))
                 self.update_status(0, "")
                 return
 
@@ -679,6 +704,12 @@ class DuplicateFinderApp:
                 self.queue.put(("complete", True, msg, None))  # Add None as filename
                 self.root.after(1000, lambda: self.update_status(0, ""))
 
+            # Modify existing error handling code:
+            if error_files:
+                for error in error_files:
+                    self.log_error("Processing Error", "Unknown", error)
+                msg += f"\n\nErrors have been logged to: {self.log_file}"
+
         except Exception as e:
             self.queue.put(("complete", False, f"A critical error occurred: {str(e)}", None))
             self.root.after(1000, lambda: self.update_status(0, ""))
@@ -686,36 +717,43 @@ class DuplicateFinderApp:
     def update_status(self, progress, status):
         self.queue.put(("status", progress, status))
 
+    #Add the check_queue method with proper error handling
     def check_queue(self):
-        while not self.queue.empty():
-            msg = self.queue.get()
-            if msg[0] == "status":
-                _, progress, status = msg
-                self.progress["value"] = progress
-                self.status_var.set(status)
-                self.root.update_idletasks()
-            elif msg[0] == "complete":
-                _, success, message, filename = msg
-                self.enable_controls()
+        """Process messages from the queue"""
+        try:
+            while self.queue.qsize():
+                msg = self.queue.get(0)
+                msg_type = msg[0]
 
-                if success:
-                    if filename:
-                        try:
-                            if messagebox.askyesno("Success", message + "\n\nWould you like to open the file?"):
-                                open_file(filename)
-                        except Exception as e:
-                            messagebox.showerror("Error", f"Failed to open file: {str(e)}")
+                if msg_type == "status":
+                    progress, status = msg[1:]
+                    self.progress["value"] = progress
+                    self.status_var.set(status)
+                elif msg_type == "complete":
+                    try:
+                        _, success, message, filename = msg
+                    except ValueError:
+                        # Handle case where filename is missing
+                        _, success, message = msg
+                        filename = None
+                    
+                    if success and filename:
+                        self.show_success_with_open(message, filename)
                     else:
-                        messagebox.showinfo("Success", message)
-                else:
-                    messagebox.showerror("Error", message)
+                        messagebox.showinfo("Process Complete", message)
+                    
+                    self.enable_controls()
+                elif msg_type == "error":
+                    messagebox.showerror("Error", msg[1])
+                    self.enable_controls()
 
-                # Reset progress bar
-                self.progress["value"] = 0
-                self.status_var.set("")
-                self.root.update_idletasks()
-
-        self.root.after(100, self.check_queue)
+        except Exception as e:
+            self.logger.error(f"Error in check_queue: {str(e)}")
+            messagebox.showerror("Error", "An error occurred while processing results")
+            self.enable_controls()
+        
+        finally:
+            self.root.after(100, self.check_queue)
 
 def open_file(filepath):
     os.startfile(filepath)
