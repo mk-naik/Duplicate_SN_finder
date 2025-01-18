@@ -546,7 +546,7 @@ class DuplicateFinderApp:
 
             if not all_barcodes:
                 self.update_status(100, "No barcodes found.")
-                self.queue.put(("complete", False, "No ICON barcodes found in any of the selected files.", None))
+                self.queue.put(("complete", False, "No ICON barcodes found in any of the selected file(s).", None))
                 return
 
             self.update_status(90, "Processing duplicates...")
