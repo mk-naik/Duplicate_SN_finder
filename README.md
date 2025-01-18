@@ -17,9 +17,10 @@ To run this application, you need:
 - **Python 3.8 or above**
 - Required Python packages:
   - `tkinter` (comes with Python standard library)
-  - `pandas`
+  - `pandas` (working with tabular data like Excel files or CSVs.)
   - `openpyxl` (for reading and writing `.xlsx` files)
   - `xlrd` (for reading older `.xls` files)
+  - `psutil` (Provides system and process utilities to get information about CPU, memory, disk, and network usage, and can be used for performance monitoring)
 
 ## Installation
 
@@ -31,7 +32,7 @@ To run this application, you need:
 
 2. Install the required Python packages:
    ```bash
-   pip install pandas openpyxl xlrd
+   pip install pandas openpyxl xlrd psutil
    ```
 
 3. Run the application:
