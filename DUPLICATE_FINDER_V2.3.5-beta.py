@@ -6,6 +6,7 @@ import os
 import datetime
 import threading
 from queue import Queue
+import xlsxwriter
 import re
 import logging
 from openpyxl import load_workbook
@@ -14,6 +15,9 @@ import gc
 import psutil
 import time
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
+import threading
 
 
 class DuplicateFinderApp:
@@ -22,6 +26,12 @@ class DuplicateFinderApp:
         self.setup_logging()
         self.setup_memory_monitor()
         self.initialize_gui()
+        self.input_queue = Queue()
+        self.processing_queue = Queue()
+        self.output_queue = Queue()
+        self.max_workers = min(32, (os.cpu_count() or 1) + 4)
+        # Add case_sensitive flag, default to False for case-insensitive matching
+        self.case_sensitive = False
 
     def setup_logging(self):
         logging.basicConfig(
@@ -631,6 +641,7 @@ class DuplicateFinderApp:
                 wb = load_workbook(output_filename)
 
                 # Add hyperlinks to Detailed_Report sheet
+                self.update_status(97, "Adding Hyperlink on Detailed_Repor...")
                 ws_detailed = wb['Detailed_Report']
                 for row in range(2, ws_detailed.max_row + 1):  # Start from row 2 to skip header
                     for col in range(3, ws_detailed.max_column + 1):  # Start from column 3 (FILE_NAME1)
@@ -642,6 +653,7 @@ class DuplicateFinderApp:
                                 cell.font = Font(color="0000FF", underline="single")  # Blue, underlined
 
                 # Add hyperlinks to File_Summary sheet
+                self.update_status(98, "Adding Hyperlink on File_Summary...")
                 ws_summary = wb['File_Summary']
                 path_col = None
                 # Find the PATH column
@@ -715,6 +727,150 @@ class DuplicateFinderApp:
             self.root.update_idletasks()
         
         self.root.after(100, self.check_queue)
+
+    def create_excel_with_hyperlinks(self, df: pd.DataFrame, output_path: str, chunk_size: int = 5000) -> None:
+        try:
+            # Phase 1: Fast initial write with xlsxwriter
+            with xlsxwriter.Workbook(output_path, {'constant_memory': True}) as workbook:
+                worksheet = workbook.add_worksheet('Duplicates')
+                
+                # Write headers
+                for col, header in enumerate(df.columns):
+                    worksheet.write(0, col, header)
+                
+                # Write data in chunks
+                total_rows = len(df)
+                for start_idx in range(0, total_rows, chunk_size):
+                    end_idx = min(start_idx + chunk_size, total_rows)
+                    chunk = df.iloc[start_idx:end_idx]
+                    
+                    for row_idx, row in enumerate(chunk.values, start_idx + 1):
+                        for col_idx, value in enumerate(row):
+                            worksheet.write(row_idx, col_idx, value)
+                    
+                    del chunk
+                    gc.collect()
+                    self.update_progress((start_idx + chunk_size) / total_rows * 50)  # First 50%
+            
+            # Phase 2: Add hyperlinks with openpyxl
+            wb = load_workbook(output_path)
+            ws = wb.active
+            
+            # Process hyperlinks in chunks
+            hyperlink_columns = [idx for idx, col in enumerate(df.columns) if 'path' in col.lower()]
+            total_links = len(hyperlink_columns) * total_rows
+            links_processed = 0
+            
+            for row_idx in range(2, total_rows + 2):  # Skip header
+                for col_idx in hyperlink_columns:
+                    cell = ws.cell(row=row_idx, column=col_idx + 1)
+                    if cell.value and isinstance(cell.value, str):
+                        cell.hyperlink = cell.value
+                        cell.font = Font(color="0000FF", underline="single")
+                    
+                    links_processed += 1
+                    if links_processed % 100 == 0:
+                        self.update_progress(50 + (links_processed / total_links * 50))  # Last 50%
+            
+            wb.save(output_path)
+            wb.close()
+            
+            self.logger.info(f"Excel file created successfully: {output_path}")
+            self.clear_memory()
+            
+        except Exception as e:
+            self.logger.error(f"Error creating Excel file: {str(e)}")
+            raise
+
+    def update_progress(self, percentage: float) -> None:
+        if hasattr(self, 'progress_var'):
+            self.progress_var.set(percentage)
+            self.root.update_idletasks()
+
+    def clear_memory(self) -> None:
+        gc.collect()
+        if hasattr(self, 'df'):
+            del self.df
+        self.logger.info(f"Current memory usage: {self.process.memory_percent()}%")
+
+    def process_files_threaded(self, grouped_duplicates):
+        # Initialize thread pools
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Start writer thread
+            writer_thread = threading.Thread(
+                target=self.excel_writer_thread,
+                args=(self.output_queue,)
+            )
+            writer_thread.start()
+
+            # Submit processing tasks
+            chunk_size = 1000
+            total_rows = len(grouped_duplicates)
+            futures = []
+
+            for i in range(0, total_rows, chunk_size):
+                chunk = grouped_duplicates[i:i + chunk_size]
+                futures.append(
+                    executor.submit(self.process_chunk, chunk)
+                )
+
+            # Collect results
+            for future in futures:
+                self.output_queue.put(future.result())
+
+            # Signal completion
+            self.output_queue.put(None)
+            writer_thread.join()
+
+    def process_chunk(self, chunk):
+        processed_rows = []
+        for row in chunk:
+            new_row = [row[0], row[1]]  # Barcode and copies
+            file_tuples = row[2:]
+            new_row.extend([tup[0] if isinstance(tup, tuple) else "" 
+                          for tup in file_tuples])
+            processed_rows.append(new_row)
+        return processed_rows
+
+    def excel_writer_thread(self, output_queue):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination_path = os.path.expanduser("~")
+        folder_path = os.path.join(destination_path, "Desktop", "DUPLICATE_BARCODES")
+        os.makedirs(folder_path, exist_ok=True)
+        output_filename = os.path.join(folder_path, f"ICON_Duplicates_{timestamp}.xlsx")
+
+        with xlsxwriter.Workbook(output_filename, {'constant_memory': True}) as workbook:
+            worksheet = workbook.add_worksheet('Detailed_Report')
+            row_num = 0
+
+            while True:
+                chunk = output_queue.get()
+                if chunk is None:  # Exit signal
+                    break
+
+                for row in chunk:
+                    for col, value in enumerate(row):
+                        worksheet.write(row_num, col, value)
+                    row_num += 1
+
+                self.update_progress(row_num)
+
+    def compare_patterns(self, str1, str2):
+        """Compare two strings case-insensitively"""
+        if self.case_sensitive:
+            return str1 == str2
+        return str1.lower() == str2.lower()
+
+    def find_duplicates(self, data):
+        # Convert patterns to lowercase for comparison while keeping original data
+        lowercase_data = {k: v.lower() if isinstance(v, str) else v 
+                         for k, v in data.items()}
+        duplicates = []
+        for i in range(len(data)):
+            for j in range(i + 1, len(data)):
+                if self.compare_patterns(lowercase_data[i], lowercase_data[j]):
+                    duplicates.append((i, j))
+        return duplicates
 
 def open_file(filepath):
     os.startfile(filepath)
