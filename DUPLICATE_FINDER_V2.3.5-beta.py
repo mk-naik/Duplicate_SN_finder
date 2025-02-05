@@ -154,7 +154,7 @@ class DuplicateFinderApp:
         dialog.wait_window()
 
     def initialize_gui(self):
-        self.root.title("ICON Barcode Duplicate Finder v2.3.4")
+        self.root.title("ICON Barcode Duplicate Finder v2.3.5-beta")
         self.root.geometry("600x500")
 
         # Custom ICON barcode patterns
