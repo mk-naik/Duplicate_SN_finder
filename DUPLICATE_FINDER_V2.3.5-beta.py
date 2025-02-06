@@ -301,7 +301,7 @@ class DuplicateFinderApp:
             return False, None
 
         # Convert to string and remove any whitespace
-        str_value = str(value).strip()
+        str_value = str(value).strip().upper()
 
         # Skip empty strings
         if not str_value:
@@ -311,25 +311,10 @@ class DuplicateFinderApp:
         if len(str_value) not in [17, 18, 20]:
             return False, None
 
-        # Check if starts with 'ICON'
-        if not str_value.startswith('ICON'):
-            return False, None
-
-        # For 17-character format
-        if len(str_value) == 17:
-            if re.match(self.barcode_patterns['ICON-17'], str_value):
-                return True, 'ICON-17'
-
-        # For 18-character format
-        elif len(str_value) == 18:
-            if re.match(self.barcode_patterns['ICON-18'], str_value):
-                return True, 'ICON-18'
-
-        # For 20-character format
-        elif len(str_value) == 20:
-            if re.match(self.barcode_patterns['ICON-20'], str_value):
-                return True, 'ICON-20'
-
+        # Check patterns
+        for barcode_type, pattern in self.barcode_patterns.items():
+            if re.fullmatch(pattern, str_value):  # Explicit flag
+                return True, barcode_type
         return False, None
 
     def find_barcodes_in_dataframe(self, df):
@@ -341,9 +326,9 @@ class DuplicateFinderApp:
                 is_barcode, barcode_type = self.detect_barcodes(value)
                 if is_barcode:
                     barcodes.append({
-                        'value': str(value).strip(),
+                        'value': str(value).strip().upper(),
                         'column': column,
-                        'row': idx + 2,  # Adding 2 for Excel row number (1-based + header)
+                        'row': idx + 1,  # Adding 1 for Excel row number (1-based)
                         'type': barcode_type
                     })
 
